@@ -1,5 +1,5 @@
 {
-  "name": "@curvefi/api",
+  "name": "@defisaver/curvefi-api",
   "version": "2.58.6",
   "description": "JavaScript library for curve.fi",
   "main": "lib/index.js",
