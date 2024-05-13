@@ -1,12 +1,27 @@
 import axios from 'axios';
-import { Contract } from 'ethers';
+import {BrowserProvider, Contract, JsonRpcProvider, Signer} from 'ethers';
 import { Contract as MulticallContract } from "ethcall";
 import BigNumber from 'bignumber.js';
-import {IChainId, IDict, INetworkName, IRewardFromApi, REFERENCE_ASSET} from './interfaces';
+import {
+    IBasePoolShortItem,
+    IChainId,
+    IDict,
+    INetworkName,
+    IRewardFromApi,
+    IVolumeAndAPYs,
+    REFERENCE_ASSET,
+} from './interfaces';
 import { curve, NETWORK_CONSTANTS } from "./curve.js";
-import { _getFactoryAPYsAndVolumes, _getLegacyAPYsAndVolumes, _getAllPoolsFromApi, _getSubgraphData } from "./external-api.js";
+import {
+    _getAllPoolsFromApi,
+    _getFactoryAPYs,
+    _getSubgraphData,
+    _getVolumes,
+} from "./external-api.js";
 import ERC20Abi from './constants/abis/ERC20.json' assert { type: 'json' };
 import { L2Networks } from './constants/L2Networks.js';
+import { volumeNetworks } from "./constants/volumeNetworks.js";
+import { getPool } from "./pools/index.js";
 
 
 export const ETH_ADDRESS = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
@@ -426,7 +441,9 @@ export const _getUsdRate = async (assetId: string): Promise<number> => {
         56: "binance-smart-chain",
         100: 'xdai',
         137: 'polygon-pos',
+        196: 'x-layer',
         250: 'fantom',
+        252: 'fraxtal',
         324: 'zksync',
         1284: 'moonbeam',
         2222: 'kava',
@@ -440,10 +457,12 @@ export const _getUsdRate = async (assetId: string): Promise<number> => {
     const nativeTokenName = {
         1: 'ethereum',
         10: 'ethereum',
-        56: 'bnb',
+        56: 'binancecoin',
         100: 'xdai',
         137: 'matic-network',
+        196: 'okb',
         250: 'fantom',
+        252: 'frax-ether',
         324: 'ethereum',
         1284: 'moonbeam',
         2222: 'kava',
@@ -498,19 +517,89 @@ export const getUsdRate = async (coin: string): Promise<number> => {
     return await _getUsdRate(coinAddress);
 }
 
+export const getBaseFeeByLastBlock = async ()  => {
+    const provider = curve.provider;
+
+    try {
+        const block = await provider.getBlock('latest');
+        if(!block) {
+            return 0.01
+        }
+
+        return Number(block.baseFeePerGas) / (10**9);
+    } catch (error: any) {
+        throw new Error(error)
+    }
+}
+
+export const getGasPriceByLastTransactions = async ()  => {
+    const provider = curve.provider;
+
+    const latestBlockNumber = await provider.getBlockNumber();
+
+    let totalGasPrice = 0;
+    let transactionsCount = 0;
+
+    const txAmount = 15;
+
+    for (let i = latestBlockNumber; i > latestBlockNumber - txAmount && i >= 0; i--) {
+        const block = await provider.getBlock(i);
+        if (!block) continue;
+
+        for (const txHash of block.transactions) {
+            const tx = await provider.getTransaction(txHash);
+            console.log(tx, tx?.gasPrice);
+            if (!tx) continue;
+
+            totalGasPrice = totalGasPrice + Number(tx.gasPrice);
+            transactionsCount++;
+
+            if (transactionsCount >= txAmount) break; // Limit to txAmount transactions
+        }
+    }
+
+    return Number((totalGasPrice / transactionsCount / 1e9).toFixed(2));
+}
+
 export const getGasPriceFromL1 = async (): Promise<number> => {
-    if(L2Networks.includes(curve.chainId)) {
-        const gasPrice = await curve.contracts[curve.constants.ALIASES.gas_oracle].contract.l1BaseFee();
-        return Number(gasPrice) + 1e9; // + 1 gwei
+    if(L2Networks.includes(curve.chainId) && curve.L1WeightedGasPrice) {
+        return curve.L1WeightedGasPrice + 1e9; // + 1 gwei
     } else {
         throw Error("This method exists only for L2 networks");
     }
 }
 
 export const getGasPriceFromL2 = async (): Promise<number> => {
+    if(curve.chainId === 42161) {
+        return await getBaseFeeByLastBlock()
+    }
+    if(curve.chainId === 196) {
+        return await getGasPriceByLastTransactions() // gwei
+    }
     if(L2Networks.includes(curve.chainId)) {
-        const gasPrice = await curve.contracts[curve.constants.ALIASES.gas_oracle].contract.gasPrice();
+        const gasPrice = await curve.contracts[curve.constants.ALIASES.gas_oracle_blob].contract.gasPrice({"gasPrice":"0x2000000"});
         return Number(gasPrice);
+    } else {
+        throw Error("This method exists only for L2 networks");
+    }
+}
+
+export const getGasInfoForL2 = async (): Promise<Record<string, number | null>> => {
+    if(curve.chainId === 42161) {
+        const baseFee = await getBaseFeeByLastBlock()
+
+        return  {
+            maxFeePerGas: Number(((baseFee * 1.1) + 0.01).toFixed(2)),
+            maxPriorityFeePerGas: 0.01,
+        }
+    } else if(curve.chainId === 196) {
+        const gasPrice = await getGasPriceByLastTransactions()
+
+        return  {
+            gasPrice,
+            maxFeePerGas: null,
+            maxPriorityFeePerGas: null,
+        }
     } else {
         throw Error("This method exists only for L2 networks");
     }
@@ -552,29 +641,23 @@ export const getTVL = async (network: INetworkName | IChainId = curve.chainId): 
     return allTypesExtendedPoolData.reduce((sum, data) => sum + (data.tvl ?? data.tvlAll ?? 0), 0)
 }
 
-export const getVolume = async (network: INetworkName | IChainId = curve.chainId): Promise<{ totalVolume: number, cryptoVolume: number, cryptoShare: number }> => {
-    network = _getNetworkName(network);
-    if (["zksync", "moonbeam", "kava", "base", "celo", "aurora", "bsc"].includes(network)) {
-        const chainId = _getChainId(network);
-        if (curve.chainId !== chainId) throw Error("To get volume for ZkSync, Moonbeam, Kava, Base, Celo, Aurora or Bsc connect to the network first");
-        const [mainPoolsData, factoryPoolsData] = await Promise.all([
-            _getLegacyAPYsAndVolumes(network),
-            _getFactoryAPYsAndVolumes(network),
-        ]);
-        let volume = 0;
-        for (const id in mainPoolsData) {
-            volume += mainPoolsData[id].volume ?? 0;
-        }
-        for (const pool of factoryPoolsData) {
-            const lpToken = _getTokenAddressBySwapAddress(pool.poolAddress);
-            const lpPrice = lpToken ? await _getUsdRate(lpToken) : 0;
-            volume += pool.volume * lpPrice;
-        }
-
-        return { totalVolume: volume, cryptoVolume: 0, cryptoShare: 0 }
+export const getVolumeApiController = async (network: INetworkName): Promise<IVolumeAndAPYs> => {
+    if(volumeNetworks.getVolumes.includes(curve.chainId)) {
+        return  await _getVolumes(network);
+    }
+    if(volumeNetworks.getFactoryAPYs.includes(curve.chainId)) {
+        return await _getFactoryAPYs(network);
+    }
+    if(volumeNetworks.getSubgraphData.includes(curve.chainId)) {
+        return await _getSubgraphData(network);
     }
 
-    const { totalVolume, cryptoVolume, cryptoShare } = await _getSubgraphData(network);
+    throw Error(`Can't get volume for network: ${network}`);
+}
+
+export const getVolume = async (network: INetworkName | IChainId = curve.chainId): Promise<{ totalVolume: number, cryptoVolume: number, cryptoShare: number }> => {
+    network = _getNetworkName(network);
+    const { totalVolume, cryptoVolume, cryptoShare } = await getVolumeApiController(network);
     return { totalVolume, cryptoVolume, cryptoShare }
 }
 
@@ -682,10 +765,71 @@ export const getPoolName = (name: string): string => {
     }
 }
 
+export const isStableNgPool = (name: string): boolean => {
+    return name.includes('factory-stable-ng')
+}
+
 export const assetTypeNameHandler = (assetTypeName: string): REFERENCE_ASSET => {
     if (assetTypeName.toUpperCase() === 'UNKNOWN') {
         return 'OTHER';
     } else {
         return assetTypeName.toUpperCase() as REFERENCE_ASSET;
+    }
+}
+
+export const getBasePools = async (): Promise<IBasePoolShortItem[]> => {
+    const factoryContract = curve.contracts[curve.constants.ALIASES['stable_ng_factory']].contract;
+    const factoryMulticallContract = curve.contracts[curve.constants.ALIASES['stable_ng_factory']].multicallContract;
+
+    const basePoolCount = Number(curve.formatUnits(await factoryContract.base_pool_count(curve.constantOptions), 0));
+
+    const calls = [];
+    for (let i = 0; i < basePoolCount; i++) {
+        calls.push(factoryMulticallContract.base_pool_list(i));
+    }
+
+    const basePoolList = (await curve.multicallProvider.all(calls) as string[]).map((item: string) => item.toLowerCase());
+
+    const pools = {...curve.constants.STABLE_NG_FACTORY_POOLS_DATA, ...curve.constants.FACTORY_POOLS_DATA, ...curve.constants.POOLS_DATA};
+
+    const basePoolIds = Object.keys(pools).filter((item: string) => basePoolList.includes(pools[item].swap_address));
+
+    return basePoolIds.map((poolId) => {
+        const pool = getPool(poolId);
+        return {
+            id: poolId,
+            name: pool.name,
+            pool: pool.address,
+            token: pool.lpToken,
+            coins: pool.underlyingCoinAddresses,
+        }
+    })
+}
+
+export const memoizedContract = (): (address: string, abi: any, provider: BrowserProvider | JsonRpcProvider | Signer) => Contract => {
+    const cache: Record<string, Contract> = {};
+    return (address: string, abi: any, provider: BrowserProvider | JsonRpcProvider | Signer): Contract => {
+        if (address in cache) {
+            return cache[address];
+        }
+        else {
+            const result = new Contract(address, abi, provider)
+            cache[address] = result;
+            return result;
+        }
+    }
+}
+
+export const memoizedMulticallContract = (): (address: string, abi: any) => MulticallContract => {
+    const cache: Record<string, MulticallContract> = {};
+    return (address: string, abi: any): MulticallContract => {
+        if (address in cache) {
+            return cache[address];
+        }
+        else {
+            const result = new MulticallContract(address, abi)
+            cache[address] = result;
+            return result;
+        }
     }
 }

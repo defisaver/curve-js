@@ -1,6 +1,6 @@
 import BigNumber from 'bignumber.js';
 import memoize from "memoizee";
-import { _getPoolsFromApi, _getSubgraphData, _getFactoryAPYsAndVolumes, _getLegacyAPYsAndVolumes } from '../external-api.js';
+import {_getAllGauges, _getAllGaugesFormatted, _getPoolsFromApi} from '../external-api.js';
 import {
     _getCoinAddresses,
     _getBalances,
@@ -28,6 +28,7 @@ import {
     DIGas,
     _getAddress,
     isMethodExist,
+    getVolumeApiController,
 } from '../utils.js';
 import { IDict, IReward, IProfit, IPoolType } from '../interfaces';
 import { curve } from "../curve.js";
@@ -71,8 +72,8 @@ export class PoolTemplate {
     wrappedDecimals: number[];
     useLending: boolean[];
     inApi: boolean;
-    isGaugeKilled: boolean;
-    gaugeStatus: Record<string, boolean> | null;
+    isGaugeKilled: () => Promise<boolean>;
+    gaugeStatus: () => Promise<any>;
     estimateGas: {
         depositApprove: (amounts: (number | string)[]) => Promise<number | number[]>,
         deposit: (amounts: (number | string)[]) => Promise<number | number[]>,
@@ -166,8 +167,8 @@ export class PoolTemplate {
         this.wrappedDecimals = poolData.wrapped_decimals;
         this.useLending = poolData.use_lending || poolData.underlying_coin_addresses.map(() => false);
         this.inApi = poolData.in_api ?? false;
-        this.isGaugeKilled = poolData.is_gauge_killed ?? false;
-        this.gaugeStatus = poolData.gauge_status ?? null;
+        this.isGaugeKilled = this.getIsGaugeKilled.bind(this);
+        this.gaugeStatus = this.getGaugeStatus.bind(this);
         this.estimateGas = {
             depositApprove: this.depositApproveEstimateGas.bind(this),
             deposit: this.depositEstimateGas.bind(this),
@@ -368,6 +369,8 @@ export class PoolTemplate {
     }
 
     private statsTotalLiquidity = async (useApi = true): Promise<string> => {
+        if (curve.chainId === 1 && this.id === "crveth") return "0"
+
         if (this.isLlamma) {
             const stablecoinContract = curve.contracts[this.underlyingCoinAddresses[0]].multicallContract;
             const collateralContract = curve.contracts[this.underlyingCoinAddresses[1]].multicallContract;
@@ -417,58 +420,29 @@ export class PoolTemplate {
     }
 
     private statsVolume = async (): Promise<string> => {
-        if ([56, 324, 1284, 2222, 8453, 42220, 1313161554].includes(curve.chainId)) {  // Bsc || ZkSync || Moonbeam || Kava || Base || Celo || Aurora || Bsc
-            const [mainPoolsData, factoryPoolsData] = await Promise.all([
-                _getLegacyAPYsAndVolumes(curve.constants.NETWORK_NAME),
-                _getFactoryAPYsAndVolumes(curve.constants.NETWORK_NAME),
-            ]);
-            if (this.id in mainPoolsData) {
-                return (mainPoolsData[this.id].volume ?? 0).toString();
-            }
-            const poolData = factoryPoolsData.find((d) => d.poolAddress.toLowerCase() === this.address);
-            if (!poolData) throw Error(`Can't get Volume for ${this.name} (id: ${this.id})`)
-            const lpPrice = await _getUsdRate(this.lpToken);
-
-            return (poolData.volume * lpPrice).toString()
-        }
         const network = curve.constants.NETWORK_NAME;
-        const poolsData = (await _getSubgraphData(network)).poolsData;
+        const {poolsData} = await getVolumeApiController(network);
         const poolData = poolsData.find((d) => d.address.toLowerCase() === this.address);
-        if (!poolData) throw Error(`Can't get Volume for ${this.name} (id: ${this.id})`)
 
-        return poolData.volumeUSD.toString()
+        if(poolData) {
+            return poolData.volumeUSD.toString()
+        }
+
+        throw Error(`Can't get Volume for ${this.name} (id: ${this.id})`)
     }
 
     private statsBaseApy = async (): Promise<{ day: string, week: string }> => {
-        if ([56, 324, 1284, 2222, 8453, 42220, 1313161554].includes(curve.chainId)) {  // Bsc || ZkSync || Moonbeam || Kava || Base || Celo || Aurora
-            const [mainPoolsData, factoryPoolsData] = await Promise.all([
-                _getLegacyAPYsAndVolumes(curve.constants.NETWORK_NAME),
-                _getFactoryAPYsAndVolumes(curve.constants.NETWORK_NAME),
-            ]);
-            if (this.id in mainPoolsData) {
-                return {
-                    day: mainPoolsData[this.id].apy.day.toString(),
-                    week: mainPoolsData[this.id].apy.week.toString(),
-                }
-            }
-            const poolData = factoryPoolsData.find((d) => d.poolAddress.toLowerCase() === this.address);
-            if (!poolData) throw Error(`Can't get base APY for ${this.name} (id: ${this.id})`)
-
-            return {
-                day: poolData.apy.toString(),
-                week: poolData.apy.toString(),
-            }
-        }
         const network = curve.constants.NETWORK_NAME;
-        const poolsData = (await _getSubgraphData(network)).poolsData;
+        const {poolsData} = await getVolumeApiController(network);
         const poolData = poolsData.find((d) => d.address.toLowerCase() === this.address);
 
-        if (!poolData) throw Error(`Can't get base APY for ${this.name} (id: ${this.id})`)
-
-        return {
-            day: poolData.latestDailyApy.toString(),
-            week: poolData.latestWeeklyApy.toString(),
+        if(poolData) {
+            return {
+                day: poolData.day.toString(),
+                week: poolData.week.toString(),
+            }
         }
+        throw Error(`Can't get base APY for ${this.name} (id: ${this.id})`)
     }
 
     private _calcTokenApy = async (futureWorkingSupplyBN: BigNumber | null = null): Promise<[baseApy: number, boostedApy: number]> => {
@@ -1040,6 +1014,8 @@ export class PoolTemplate {
         if (this.rewardsOnly()) throw Error(`${this.name} has Rewards-Only Gauge. Use claimRewards instead`);
         const contract = curve.chainId === 1 ? curve.contracts[curve.constants.ALIASES.minter].contract : curve.contracts[curve.constants.ALIASES.gauge_factory].contract;
 
+        await curve.updateFeeData();
+
         const gasLimit = mulBy1_3(DIGas(await contract.mint.estimateGas(this.gauge, curve.constantOptions)));
         return (await contract.mint(this.gauge, { ...curve.options, gasLimit })).hash;
     }
@@ -1358,6 +1334,8 @@ export class PoolTemplate {
         const gaugeContract = curve.contracts[this.gauge].contract;
         if (!("claim_rewards()" in gaugeContract)) throw Error (`${this.name} pool doesn't have such method`);
 
+        await curve.updateFeeData();
+
         const gasLimit = mulBy1_3(DIGas(await gaugeContract.claim_rewards.estimateGas(curve.constantOptions)));
         return (await gaugeContract.claim_rewards({ ...curve.options, gasLimit })).hash;
     }
@@ -1596,12 +1574,6 @@ export class PoolTemplate {
         const ethIndex = getEthIndex(coinAddresses);
         const value = _amounts[ethIndex] || curve.parseUnits("0");
 
-        const maxCoins = curve.chainId === 137 ? 6 : 5;
-        for (let i = 0; i < maxCoins; i++) {
-            coinAddresses[i] = coinAddresses[i] || curve.constants.ZERO_ADDRESS;
-            _amounts[i] = _amounts[i] || curve.parseUnits("0");
-        }
-
         const _gas = (await contract.deposit_and_stake.estimateGas(
             depositAddress,
             this.lpToken,
@@ -1611,6 +1583,7 @@ export class PoolTemplate {
             _amounts,
             _minMintAmount,
             useUnderlying,
+            (this.isStableNg && this.isPlain) || (isUnderlying && this.isMeta && (new PoolTemplate(this.basePool)).isStableNg),
             this.isMetaFactory && isUnderlying ? this.address : curve.constants.ZERO_ADDRESS,
             { ...curve.constantOptions, value }
         ))
@@ -1628,6 +1601,7 @@ export class PoolTemplate {
             _amounts,
             _minMintAmount,
             useUnderlying,
+            (this.isStableNg && this.isPlain) || (isUnderlying && this.isMeta && (new PoolTemplate(this.basePool)).isStableNg),
             this.isMetaFactory && isUnderlying ? this.address : curve.constants.ZERO_ADDRESS,
             { ...curve.options, gasLimit, value }
         )).hash
@@ -1691,7 +1665,21 @@ export class PoolTemplate {
     }
 
     public async withdrawImbalanceBonus(amounts: (number | string)[]): Promise<string> {
-        const prices = (this.isCrypto || this.id === 'wsteth') ? await this._underlyingPrices() : this.underlyingCoins.map(() => 1);
+        let prices: number[] = [];
+
+        //for crvusd and stable-ng implementations
+        const isUseStoredRates = isMethodExist(curve.contracts[this.address].contract, 'stored_rates') && this.isPlain;
+
+        if(this.isCrypto || this.id === 'wsteth') {
+            prices = await this._underlyingPrices();
+        } else if (isUseStoredRates) {
+            const result = await this._stored_rates();
+            result.forEach((item, index) => {
+                prices.push(Number(item)/(10 ** (36 - this.underlyingDecimals[index])))
+            })
+        } else {
+            prices = this.underlyingCoins.map(() => 1);
+        }
 
         const value = amounts.map(checkNumber).map(Number).reduce((s, a, i) => s + (a * prices[i]), 0);
         const lpTokenAmount = await this.withdrawImbalanceExpected(amounts);
@@ -1794,7 +1782,21 @@ export class PoolTemplate {
     }
 
     public async withdrawOneCoinBonus(lpTokenAmount: number | string, coin: string | number): Promise<string> {
-        const prices = (this.isCrypto || this.id === 'wsteth') ? await this._underlyingPrices() : this.underlyingCoins.map(() => 1);
+        let prices: number[] = [];
+
+        //for crvusd and stable-ng implementations
+        const isUseStoredRates = isMethodExist(curve.contracts[this.address].contract, 'stored_rates') && this.isPlain;
+
+        if(this.isCrypto || this.id === 'wsteth') {
+            prices = await this._underlyingPrices();
+        } else if (isUseStoredRates) {
+            const result = await this._stored_rates();
+            result.forEach((item, index) => {
+                prices.push(Number(item)/(10 ** (36 - this.underlyingDecimals[index])))
+            })
+        } else {
+            prices = this.underlyingCoins.map(() => 1);
+        }
         const coinPrice = prices[this._getCoinIdx(coin)];
 
         const amount = Number(await this.withdrawOneCoinExpected(lpTokenAmount, coin));
@@ -2355,5 +2357,17 @@ export class PoolTemplate {
         }
 
         return await Promise.all(promises)
+    }
+
+    private async getGaugeStatus(): Promise<any> {
+        const gaugeData = await _getAllGaugesFormatted();
+
+        return gaugeData[this.gauge] ? gaugeData[this.gauge].gaugeStatus : null;
+    }
+
+    private async getIsGaugeKilled(): Promise<boolean> {
+        const gaugeData = await _getAllGaugesFormatted();
+
+        return gaugeData[this.gauge] ? gaugeData[this.gauge].is_killed : false;
     }
 }

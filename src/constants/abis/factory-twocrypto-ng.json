@@ -1,6 +1,6 @@
 [
   {
-    "name": "TricryptoPoolDeployed",
+    "name": "TwocryptoPoolDeployed",
     "inputs": [
       {
         "name": "pool",
@@ -18,13 +18,8 @@
         "indexed": false
       },
       {
-        "name": "weth",
-        "type": "address",
-        "indexed": false
-      },
-      {
         "name": "coins",
-        "type": "address[3]",
+        "type": "address[2]",
         "indexed": false
       },
       {
@@ -38,8 +33,8 @@
         "indexed": false
       },
       {
-        "name": "packed_precisions",
-        "type": "uint256",
+        "name": "precisions",
+        "type": "uint256[2]",
         "indexed": false
       },
       {
@@ -64,6 +59,23 @@
       },
       {
         "name": "deployer",
+        "type": "address",
+        "indexed": false
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "name": "LiquidityGaugeDeployed",
+    "inputs": [
+      {
+        "name": "pool",
+        "type": "address",
+        "indexed": false
+      },
+      {
+        "name": "gauge",
         "type": "address",
         "indexed": false
       }
@@ -103,6 +115,23 @@
       },
       {
         "name": "_new_pool_implementation",
+        "type": "address",
+        "indexed": false
+      }
+    ],
+    "anonymous": false,
+    "type": "event"
+  },
+  {
+    "name": "UpdateGaugeImplementation",
+    "inputs": [
+      {
+        "name": "_old_gauge_implementation",
+        "type": "address",
+        "indexed": false
+      },
+      {
+        "name": "_new_gauge_implementation",
         "type": "address",
         "indexed": false
       }
@@ -164,6 +193,13 @@
   {
     "stateMutability": "nonpayable",
     "type": "constructor",
+    "inputs": [],
+    "outputs": []
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "initialise_ownership",
     "inputs": [
       {
         "name": "_fee_receiver",
@@ -191,11 +227,7 @@
       },
       {
         "name": "_coins",
-        "type": "address[3]"
-      },
-      {
-        "name": "_weth",
-        "type": "address"
+        "type": "address[2]"
       },
       {
         "name": "implementation_id",
@@ -234,8 +266,25 @@
         "type": "uint256"
       },
       {
-        "name": "initial_prices",
-        "type": "uint256[2]"
+        "name": "initial_price",
+        "type": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ]
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "deploy_gauge",
+    "inputs": [
+      {
+        "name": "_pool",
+        "type": "address"
       }
     ],
     "outputs": [
@@ -269,6 +318,18 @@
       {
         "name": "_implementation_index",
         "type": "uint256"
+      }
+    ],
+    "outputs": []
+  },
+  {
+    "stateMutability": "nonpayable",
+    "type": "function",
+    "name": "set_gauge_implementation",
+    "inputs": [
+      {
+        "name": "_gauge_implementation",
+        "type": "address"
       }
     ],
     "outputs": []
@@ -319,23 +380,6 @@
   {
     "stateMutability": "view",
     "type": "function",
-    "name": "get_implementation_address",
-    "inputs": [
-      {
-        "name": "_pool",
-        "type": "address"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address"
-      }
-    ]
-  },
-  {
-    "stateMutability": "view",
-    "type": "function",
     "name": "find_pool_for_coins",
     "inputs": [
       {
@@ -382,6 +426,18 @@
   {
     "stateMutability": "view",
     "type": "function",
+    "name": "pool_count",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
     "name": "get_coins",
     "inputs": [
       {
@@ -392,7 +448,7 @@
     "outputs": [
       {
         "name": "",
-        "type": "address[3]"
+        "type": "address[2]"
       }
     ]
   },
@@ -409,7 +465,7 @@
     "outputs": [
       {
         "name": "",
-        "type": "uint256[3]"
+        "type": "uint256[2]"
       }
     ]
   },
@@ -426,7 +482,7 @@
     "outputs": [
       {
         "name": "",
-        "type": "uint256[3]"
+        "type": "uint256[2]"
       }
     ]
   },
@@ -456,6 +512,23 @@
       {
         "name": "",
         "type": "uint256"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
+    "name": "get_gauge",
+    "inputs": [
+      {
+        "name": "_pool",
+        "type": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
       }
     ]
   },
@@ -536,6 +609,18 @@
   {
     "stateMutability": "view",
     "type": "function",
+    "name": "gauge_implementation",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address"
+      }
+    ]
+  },
+  {
+    "stateMutability": "view",
+    "type": "function",
     "name": "views_implementation",
     "inputs": [],
     "outputs": [
@@ -560,18 +645,6 @@
   {
     "stateMutability": "view",
     "type": "function",
-    "name": "pool_count",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint256"
-      }
-    ]
-  },
-  {
-    "stateMutability": "view",
-    "type": "function",
     "name": "pool_list",
     "inputs": [
       {
@@ -579,18 +652,6 @@
         "type": "uint256"
       }
     ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address"
-      }
-    ]
-  },
-  {
-    "stateMutability": "view",
-    "type": "function",
-    "name": "gauge_implementation",
-    "inputs": [],
     "outputs": [
       {
         "name": "",

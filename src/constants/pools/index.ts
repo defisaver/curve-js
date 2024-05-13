@@ -13,6 +13,8 @@ import { POOLS_DATA_CELO } from "./celo.js";
 import { POOLS_DATA_ZKSYNC } from "./zksync.js";
 import { POOLS_DATA_BASE } from "./base.js";
 import { POOLS_DATA_BSC } from "./bsc.js";
+import { POOLS_DATA_FRAXTAL } from "./fraxtal.js";
+import { POOLS_DATA_XLAYER } from "./xlayer.js";
 
 export {
     POOLS_DATA_ETHEREUM,
@@ -30,4 +32,6 @@ export {
     POOLS_DATA_ZKSYNC,
     POOLS_DATA_BASE,
     POOLS_DATA_BSC,
+    POOLS_DATA_FRAXTAL,
+    POOLS_DATA_XLAYER,
 };
