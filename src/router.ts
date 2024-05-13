@@ -62,15 +62,6 @@ const _handleSwapType = (swapType: ISwapType): string => {
 }
 
 const SNX = {
-    1: {
-        swap: "0xC011a73ee8576Fb46F5E1c5751cA3B9Fe0af2a6F".toLowerCase(),
-        coins: [  // Ethereum
-            "0x57Ab1ec28D129707052df4dF418D58a2D46d5f51", // sUSD
-            "0xD71eCFF9342A5Ced620049e616c5035F1dB98620", // sEUR
-            "0x5e74C9036fb86BD7eCdcb084a0673EFc32eA31cb", // sETH
-            "0xfE18be6b3Bd88A2D2A7f928d00292E7a9963CfC6", // sBTC
-        ].map((a) => a.toLowerCase()),
-    },
     10: {
         swap: "0x8700dAec35aF8Ff88c16BdF0418774CB3D7599B4".toLowerCase(),
         coins: [  // Optimism
@@ -260,7 +251,9 @@ const _buildRouteGraph = memoize(async (): Promise<IDict<IDict<IRouteStep[]>>> =
         if (curve.chainId === 1 && tvl < 1000) continue;
         if (curve.chainId !== 1 && tvl < 100) continue;
 
-        const excludedUnderlyingSwaps = (poolId === 'ib' && curve.chainId === 1) || (poolId === 'geist' && curve.chainId === 250);
+        const excludedUnderlyingSwaps = (poolId === 'ib' && curve.chainId === 1) ||
+                                        (poolId === 'geist' && curve.chainId === 250) ||
+                                        (poolId === 'saave' && curve.chainId === 1);
 
         // Wrapped coin <-> LP "swaps" (actually add_liquidity/remove_liquidity_one_coin)
         if (!poolData.is_fake && !poolData.is_llamma && wrappedCoinAddresses.length < 6) {
@@ -654,6 +647,14 @@ const _getOutputForRoute = memoize(
     }
 );
 
+const _routesCache: IDict<{ route: IRoute, output: string, timestamp: number }> = {};
+const _getBestRouteAndOutput = (inputCoin: string, outputCoin: string, amount: number | string): { route: IRoute, output: string, timestamp: number } => {
+    const [inputCoinAddress, outputCoinAddress] = _getCoinAddresses(inputCoin, outputCoin);
+    const key = `${inputCoinAddress}-${outputCoinAddress}-${amount}`
+    if (!(key in _routesCache)) throw Error("You must call getBestRouteAndOutput first");
+
+    return _routesCache[key]
+}
 export const getBestRouteAndOutput = async (inputCoin: string, outputCoin: string, amount: number | string): Promise<{ route: IRoute, output: string }> => {
     const [inputCoinAddress, outputCoinAddress] = _getCoinAddresses(inputCoin, outputCoin);
     const [inputCoinDecimals, outputCoinDecimals] = _getCoinDecimals(inputCoinAddress, outputCoinAddress);
@@ -662,6 +663,11 @@ export const getBestRouteAndOutput = async (inputCoin: string, outputCoin: strin
     if (route.length === 0) return { route, output: '0.0' };
 
     const _output = await _getOutputForRoute(route, parseUnits(amount, inputCoinDecimals)); // 15 seconds cache, so we call it to get fresh output estimation
+    _routesCache[`${inputCoinAddress}-${outputCoinAddress}-${amount}`] = {
+        route,
+        output: curve.formatUnits(_output + BigInt(1), outputCoinDecimals),
+        timestamp: Date.now(),
+    }
 
     return { route, output: curve.formatUnits(_output + BigInt(1), outputCoinDecimals) }
 }
@@ -708,7 +714,7 @@ export const swapRequired = async (inputCoin: string, outputCoin: string, outAmo
 export const swapPriceImpact = async (inputCoin: string, outputCoin: string, amount: number | string): Promise<number> => {
     const [inputCoinAddress, outputCoinAddress] = _getCoinAddresses(inputCoin, outputCoin);
     const [inputCoinDecimals, outputCoinDecimals] = _getCoinDecimals(inputCoinAddress, outputCoinAddress);
-    const { route, output } = await getBestRouteAndOutput(inputCoinAddress, outputCoinAddress, amount);
+    const { route, output } = _getBestRouteAndOutput(inputCoinAddress, outputCoinAddress, amount);
     const _amount = parseUnits(amount, inputCoinDecimals);
     const _output = parseUnits(output, outputCoinDecimals);
 
@@ -746,7 +752,7 @@ export const swapApprove = async (inputCoin: string, amount: number | string): P
 export const swapEstimateGas = async (inputCoin: string, outputCoin: string, amount: number | string): Promise<number | number[]> => {
     const [inputCoinAddress, outputCoinAddress] = _getCoinAddresses(inputCoin, outputCoin);
     const [inputCoinDecimals] = _getCoinDecimals(inputCoinAddress, outputCoinAddress);
-    const { route } = await getBestRouteAndOutput(inputCoinAddress, outputCoinAddress, amount);
+    const { route } = _getBestRouteAndOutput(inputCoinAddress, outputCoinAddress, amount);
     if (route.length === 0) return 0
 
     const _amount = parseUnits(amount, inputCoinDecimals);
@@ -759,7 +765,7 @@ export const swap = async (inputCoin: string, outputCoin: string, amount: number
     const [inputCoinDecimals, outputCoinDecimals] = _getCoinDecimals(inputCoinAddress, outputCoinAddress);
 
     await swapApprove(inputCoin, amount);
-    const { route, output } = await getBestRouteAndOutput(inputCoinAddress, outputCoinAddress, amount);
+    const { route, output } = _getBestRouteAndOutput(inputCoinAddress, outputCoinAddress, amount);
 
     if (route.length === 0) {
         throw new Error("This pair can't be exchanged");
